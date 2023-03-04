@@ -1,7 +1,9 @@
-// import { Page } from '@prisma/client'
-// import { prisma } from '../../lib/prisma'
-//CURRENTLY NOT USED
 import { OpenAIStream, OpenAIStreamPayload } from "../../utils/OpenAIStream";
+
+import { Ratelimit } from "@upstash/ratelimit";
+import type { NextApiRequest, NextApiResponse } from "next";
+import requestIp from "request-ip";
+import redis from "../../utils/redis";
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("Missing env var from OpenAI");
@@ -11,7 +13,21 @@ export const config = {
   runtime: "edge",
 };
 
-const handler = async (req: Request): Promise<Response> => {
+declare module 'next' {
+  export interface NextApiRequest {
+    json: () => Promise<any>;
+  }
+}
+
+const ratelimit = redis
+  ? new Ratelimit({
+    redis: redis,
+    limiter: Ratelimit.fixedWindow(2, "1440 m"),
+    analytics: true,
+  })
+  : undefined;
+
+const handler = async (req: NextApiRequest): Promise<Response> => {
   const { url } = (await req.json()) as {
     url?: string;
   };
@@ -21,9 +37,20 @@ const handler = async (req: Request): Promise<Response> => {
       statusText: "No URL in request"
     });
   }
+
+  if (ratelimit) {
+    const identifier = requestIp.getClientIp(req);
+    const result = await ratelimit.limit(identifier!);
+
+    if (!result.success) {
+      console.log("🙏🙏 Too many requests, you get 30 per day");
+      return new Response("🙏🙏 Too many requests, you get 30 per day");
+    }
+  }
+
   try {
     let siteText: string;
-    const response = await fetch(`https://www.w3.org/services/html2txt?url=${encodeURIComponent(url )}&noinlinerefs=on&nonums=on`);
+    const response = await fetch(`https://www.w3.org/services/html2txt?url=${encodeURIComponent(url)}&noinlinerefs=on&nonums=on`);
     console.log("html response", response)
     if (response.status === 200) {
       siteText = await response.text();

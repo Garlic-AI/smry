@@ -1,6 +1,9 @@
-// import { Page } from '@prisma/client'
-// import { prisma } from '../../lib/prisma'
 import { OpenAIStream, OpenAIStreamPayload } from "../../utils/OpenAIStream";
+
+import { Ratelimit } from "@upstash/ratelimit";
+import type { NextApiRequest, NextApiResponse } from "next";
+import requestIp from "request-ip";
+import redis from "../../utils/redis";
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("Missing env var from OpenAI");
@@ -10,10 +13,36 @@ export const config = {
   runtime: "edge",
 };
 
-const handler = async (req: Request): Promise<Response> => {
+declare module 'next' {
+  export interface NextApiRequest {
+    json: () => Promise<any>;
+  }
+}
+
+const ratelimit = redis
+  ? new Ratelimit({
+    redis: redis,
+    limiter: Ratelimit.fixedWindow(100, "1440 m"),
+    analytics: true,
+  })
+  : undefined;
+
+const handler = async (req: NextApiRequest): Promise<Response> => {
+
+  if (ratelimit) {
+    const identifier = requestIp.getClientIp(req);
+    const result = await ratelimit.limit(identifier!);
+
+    if (!result.success) {
+      console.log("🙏🙏 Too many requests, you get 30 per day");
+      return new Response("🙏🙏 Too many requests, you get 30 per day");
+    }
+  }
+
   const { content } = (await req.json()) as {
     content?: string;
   };
+
   if (!content) {
     return new Response(null, {
       status: 400,
